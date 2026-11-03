@@ -11,6 +11,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
+ARG APP_VERSION=unknown
+ENV APP_VERSION=$APP_VERSION
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
