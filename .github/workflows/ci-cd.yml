@@ -1,3 +1,4 @@
+
 name: Django CI/CD
 
 on:
@@ -6,8 +7,18 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 900360460976.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPOSITORY: djangov2
+
 jobs:
   test:
+    name: Django Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -28,16 +39,34 @@ jobs:
           python manage.py test
 
   build:
+    name: Build and Push to ECR
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: |
-          docker build \
-            --build-arg APP_VERSION=${{ github.sha }} \
-            -t djangov2:${{ github.sha }} .
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+
