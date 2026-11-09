@@ -39,7 +39,7 @@ jobs:
           python manage.py test
 
   build:
-    name: Build and Push to ECR
+    name: Build, Scan and Push to ECR
     needs: test
     runs-on: ubuntu-latest
 
@@ -47,25 +47,61 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: djangov2:${{ github.sha }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+
+      - name: Trivy Vulnerability Report
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: djangov2:${{ github.sha }}
+          format: json
+          output: trivy-results.json
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: Trivy CRITICAL Security Gate
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: djangov2:${{ github.sha }}
+          format: table
+          severity: CRITICAL
+          exit-code: '1'
+
+      - name: Upload Trivy Scan Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-report-${{ github.sha }}
+          path: trivy-results.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Configure AWS credentials
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::900360460976:role/GitHubActionsECRPushRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Push Docker Image to ECR
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag djangov2:${{ github.sha }} \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
 
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-          build-args: |
-            APP_VERSION=${{ github.sha }}
+          docker push \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
