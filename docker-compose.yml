@@ -1,6 +1,7 @@
+
 services:
   django:
-    image: 900360460976.dkr.ecr.ap-south-1.amazonaws.com/djangov2:v2
+    image: 900360460976.dkr.ecr.ap-south-1.amazonaws.com/djangov2:${APP_VERSION:?APP_VERSION is required}
     env_file:
       - .env
     expose:
