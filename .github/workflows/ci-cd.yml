@@ -102,3 +102,113 @@ jobs:
         run: |
           docker tag djangov2:${{ github.sha }} ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+  deploy:
+    name: Deploy to EC2 with Auto Rollback
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::900360460976:role/GitHubActionsECRPushRole
+          aws-region: ap-south-1
+
+      - name: Deploy through SSM and verify health
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          REMOTE_SCRIPT=$(cat <<'EOF'
+          set -Eeuo pipefail
+
+          cd /opt/techcake-django-app-v2
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          PREVIOUS_SHA=$(cat .last_working_sha 2>/dev/null || echo "v2")
+
+          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 900360460976.dkr.ecr.ap-south-1.amazonaws.com
+
+          export APP_VERSION="$NEW_SHA"
+          docker compose pull
+          docker compose up -d
+
+          HEALTHY=false
+
+          for i in $(seq 1 12); do
+            if curl -fsS https://djangov2.tc-2026-0055.nixlabs.in/health -o /tmp/deploy-health.json &&
+               python3 -c 'import json,os; d=json.load(open("/tmp/deploy-health.json")); assert d["status"] == "ok" and d["sha"] == os.environ["NEW_SHA"]' ; then
+              HEALTHY=true
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$HEALTHY" = true ]; then
+            echo "$NEW_SHA" > .last_working_sha
+            echo "DEPLOYMENT SUCCESS: $NEW_SHA"
+            exit 0
+          fi
+
+          echo "DEPLOYMENT FAILED. Rolling back to $PREVIOUS_SHA"
+
+          export APP_VERSION="$PREVIOUS_SHA"
+          docker compose pull
+          docker compose up -d
+
+          echo "ROLLBACK COMPLETED"
+          exit 1
+          EOF
+          )
+
+          REMOTE_SCRIPT="export NEW_SHA=$NEW_SHA"$'\n'"$REMOTE_SCRIPT"
+
+          PARAMETERS=$(jq -n --arg script "$REMOTE_SCRIPT" '{commands: [$script]}')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids i-032515684cf2635c7 \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy Django commit $NEW_SHA with automatic rollback" \
+            --parameters "$PARAMETERS" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          STATUS="Pending"
+
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id i-032515684cf2635c7 \
+              --query Status \
+              --output text 2>/dev/null || true)
+
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut)
+                break
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-032515684cf2635c7 \
+            --query StandardOutputContent \
+            --output text || true
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-032515684cf2635c7 \
+            --query StandardErrorContent \
+            --output text || true
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "Deployment or rollback failed. SSM status: $STATUS"
+            exit 1
+          fi
