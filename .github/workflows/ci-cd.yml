@@ -121,15 +121,44 @@ jobs:
           REMOTE_SCRIPT=$(cat <<'EOF'
           set -Eeuo pipefail
 
-          cd /opt/techcake-django-app-v2
+          APP_DIR=/opt/techcake-django-app-v2
+          cd "$APP_DIR"
 
-          git config --global --add safe.directory /opt/techcake-django-app-v2
-          git fetch origin main
-          git reset --hard origin/main
+          git -c safe.directory="$APP_DIR" -C "$APP_DIR" fetch origin main
+          git -c safe.directory="$APP_DIR" -C "$APP_DIR" reset --hard origin/main
 
           PREVIOUS_SHA=$(cat .last_working_sha 2>/dev/null || echo "v2")
 
-          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 900360460976.dkr.ecr.ap-south-1.amazonaws.com
+          echo "Previous version: $PREVIOUS_SHA"
+          echo "New version: $NEW_SHA"
+
+          if ! aws ecr describe-images \
+            --region ap-south-1 \
+            --repository-name djangov2 \
+            --image-ids imageTag="$PREVIOUS_SHA" >/dev/null 2>&1; then
+            echo "ERROR: Rollback image $PREVIOUS_SHA is not available in ECR."
+            exit 1
+          fi
+
+          aws ecr get-login-password --region ap-south-1 |
+            docker login --username AWS --password-stdin 900360460976.dkr.ecr.ap-south-1.amazonaws.com
+
+          rollback() {
+            trap - ERR
+            echo "DEPLOYMENT FAILED. Starting rollback to $PREVIOUS_SHA"
+
+            export APP_VERSION="$PREVIOUS_SHA"
+
+            if docker compose pull && docker compose up -d; then
+              echo "ROLLBACK COMPLETED: $PREVIOUS_SHA"
+              return 0
+            else
+              echo "CRITICAL: ROLLBACK FAILED"
+              return 1
+            fi
+          }
+
+          trap 'rollback' ERR
 
           export APP_VERSION="$NEW_SHA"
 
@@ -139,28 +168,34 @@ jobs:
           HEALTHY=false
 
           for i in $(seq 1 12); do
-            if curl -fsS https://djangov2.tc-2026-0055.nixlabs.in/health -o /tmp/deploy-health.json &&
-               python3 -c 'import json,os; d=json.load(open("/tmp/deploy-health.json")); assert d["status"] == "ok" and d["sha"] == os.environ["NEW_SHA"]'; then
+            if curl -fsS \
+              https://djangov2.tc-2026-0055.nixlabs.in/health \
+              -o /tmp/deploy-health.json &&
+              NEW_SHA="$NEW_SHA" python3 -c '
+          import json, os
+          data = json.load(open("/tmp/deploy-health.json"))
+          assert data.get("status") == "ok"
+          assert data.get("sha") == os.environ["NEW_SHA"]
+          '; then
               HEALTHY=true
               break
             fi
+
+            echo "Health check attempt $i failed. Retrying..."
             sleep 10
           done
 
           if [ "$HEALTHY" = true ]; then
-            echo "$NEW_SHA" > .last_working_sha
+            printf '%s\n' "$NEW_SHA" > .last_working_sha.tmp
+            mv .last_working_sha.tmp .last_working_sha
+
+            trap - ERR
             echo "DEPLOYMENT SUCCESS: $NEW_SHA"
             exit 0
           fi
 
-          echo "DEPLOYMENT FAILED. Rolling back to $PREVIOUS_SHA"
-
-          export APP_VERSION="$PREVIOUS_SHA"
-          docker compose pull
-          docker compose up -d
-
-          echo "ROLLBACK DEPLOYED: $PREVIOUS_SHA"
-
+          echo "Health verification failed."
+          rollback
           exit 1
           EOF
           )
@@ -169,7 +204,9 @@ jobs:
 
           ENCODED_SCRIPT=$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)
 
-          PARAMETERS=$(jq -n --arg script "echo $ENCODED_SCRIPT | base64 -d | bash" '{commands: [$script]}')
+          PARAMETERS=$(jq -n \
+            --arg command "echo $ENCODED_SCRIPT | base64 -d | bash" \
+            '{commands: [$command]}')
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids i-032515684cf2635c7 \
