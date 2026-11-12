@@ -1,3 +1,4 @@
+
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -28,4 +29,4 @@ USER djangoapp
 
 EXPOSE 8000
 
-CMD ["gunicorn", "techcake_site.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "wrong_module.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
