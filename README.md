@@ -56,3 +56,4 @@ It writes a small test object to the bucket and reads it back. Exit code 0 and a
 - Start it under gunicorn (bind to a local TCP port); for Track 2, this runs in a container
 
 Refer to your Track 2 task sheet for the exact requirements and definition of done.
+Jenkins webhook test.
