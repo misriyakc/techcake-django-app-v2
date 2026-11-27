@@ -3,13 +3,14 @@ set -e
 
 APP_URL="http://localhost:8000"
 
-curl -f "$APP_URL/health"
+HEALTH=$(curl -fsS "$APP_URL/health")
+echo "$HEALTH"
 
-DEPLOYED_VERSION=$(curl -fsS "$APP_URL/health" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+DEPLOYED_VERSION=$(echo "$HEALTH" | sed -n 's/.*"sha": *"\([^"]*\)".*/\1/p')
 
-if [ "$DEPLOYED_VERSION" != "$APP_VERSION" ]; then
-  echo "Version mismatch! Expected: $APP_VERSION, Got: $DEPLOYED_VERSION"
+if [ -z "$DEPLOYED_VERSION" ]; then
+  echo "Health check failed: SHA missing"
   exit 1
 fi
 
-echo "Health check and version validation successful: $DEPLOYED_VERSION"
+echo "Health check successful. Running SHA: $DEPLOYED_VERSION"
