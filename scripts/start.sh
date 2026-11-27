@@ -5,11 +5,13 @@ REGION="ap-south-1"
 ACCOUNT="900360460976"
 REPO="djangov2"
 
-APP_VERSION=$(aws ssm get-parameter \
-  --name "/techcake/app/APP_VERSION" \
+PARAMS=$(aws ssm get-parameters-by-path \
+  --path "/techcake/app/" \
+  --with-decryption \
   --region "$REGION" \
-  --query "Parameter.Value" \
-  --output text)
+  --output json)
+
+APP_VERSION=$(echo "$PARAMS" | jq -r '.Parameters[] | select(.Name == "/techcake/app/APP_VERSION") | .Value')
 
 docker stop django-app || true
 docker rm django-app || true
@@ -20,9 +22,11 @@ aws ecr get-login-password --region "$REGION" \
 
 docker pull "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO:$APP_VERSION"
 
+ENV_ARGS=$(echo "$PARAMS" | jq -r '.Parameters[] | " --env " + (.Name | sub("/techcake/app/"; "")) + "=" + .Value' | tr '\n' ' ')
+
 docker run -d \
   --name django-app \
   --restart always \
   -p 8000:8000 \
-  --env APP_VERSION="$APP_VERSION" \
+  $ENV_ARGS \
   "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO:$APP_VERSION"
