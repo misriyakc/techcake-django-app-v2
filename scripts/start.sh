@@ -1,9 +1,11 @@
+
 #!/bin/bash
 set -e
 
 REGION="ap-south-1"
 ACCOUNT="900360460976"
 REPO="djangov2"
+ENV_FILE="/tmp/django-app.env"
 
 PARAMS=$(aws ssm get-parameters-by-path \
   --path "/techcake/app/" \
@@ -24,20 +26,15 @@ aws ecr get-login-password --region "$REGION" \
 
 docker pull "$IMAGE"
 
-ENV_ARGS=()
-
-while IFS= read -r PARAM; do
-  NAME=$(echo "$PARAM" | jq -r '.Name | sub("/techcake/app/"; "")')
-  VALUE=$(echo "$PARAM" | jq -r '.Value')
-
-  if [ "$NAME" != "APP_VERSION" ]; then
-    ENV_ARGS+=(--env "$NAME=$VALUE")
-  fi
-done < <(echo "$PARAMS" | jq -c '.Parameters[]')
+echo "$PARAMS" | jq -r '
+  .Parameters[]
+  | select(.Name != "/techcake/app/APP_VERSION")
+  | "\(.Name | sub("/techcake/app/"; ""))=\(.Value)"
+' > "$ENV_FILE"
 
 docker run -d \
   --name django-app \
   --restart always \
   -p 8000:8000 \
-  "${ENV_ARGS[@]}" \
+  --env-file "$ENV_FILE" \
   "$IMAGE"
